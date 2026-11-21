@@ -207,13 +207,13 @@ class FewShotSeg(nn.Module):
 
             if idx >= 1:
                 pre_feat_bin = pyramid_feat_list[idx-1].clone()
-                pre_feat_bin = F.interpolate(pre_feat_bin, size=(bin, bin), mode='bilinear', align_corners=True)
+                pre_feat_bin = F.interpolate(pre_feat_bin, size=(bin, bin), mode='bilinear', align_corners=False)
                 rec_feat_bin = torch.cat([merge_feat_bin, pre_feat_bin], 1)
                 merge_feat_bin = self.alpha_conv[idx-1](rec_feat_bin) + merge_feat_bin
 
             merge_feat_bin = self.beta_conv[idx](merge_feat_bin) + merge_feat_bin
             inner_out_bin = merge_feat_bin
-            merge_feat_bin = F.interpolate(merge_feat_bin, size=(query_feat.size(2), query_feat.size(3)), mode='bilinear', align_corners=True)
+            merge_feat_bin = F.interpolate(merge_feat_bin, size=(query_feat.size(2), query_feat.size(3)), mode='bilinear', align_corners=False)
             pyramid_feat_list.append(merge_feat_bin)
             out_list.append(inner_out_bin)
                  
@@ -222,14 +222,14 @@ class FewShotSeg(nn.Module):
         query_feat = self.res2(query_feat)   
         fused_query_feat = query_feat.clone()                   
         # Output Part
-        out1=torch.sigmoid(torch.einsum("bchw,bcl->blhw",fused_query_feat,fg_embed))
-        out = F.interpolate(out1, size=(height, width), mode='bilinear', align_corners=True) 
+        out1=torch.sigmoid(torch.einsum("bchw,bcl->blhw",fused_query_feat.float(),fg_embed.float()))
+        out = F.interpolate(out1, size=(height, width), mode='bilinear', align_corners=False)
         return out
 
     def predict_mask(self, batch):
         logit_mask = self(batch['query_img'], batch['support_imgs'], batch['support_masks'])
         org_qry_imsize = tuple([batch['org_query_imsize'][1].item(), batch['org_query_imsize'][0].item()])
-        logit_mask = F.interpolate(logit_mask, org_qry_imsize, mode='bilinear', align_corners=True)
+        logit_mask = F.interpolate(logit_mask, org_qry_imsize, mode='bilinear', align_corners=False)
         return logit_mask
     
     def compute_loss(self, logit_mask, gt_mask):
@@ -241,7 +241,7 @@ class FewShotSeg(nn.Module):
         cosine_eps = 1e-7
         for st in range(self.shot):
             tmp_mask = (s_y[:,st,:,:] == 1).float().unsqueeze(1)
-            tmp_mask = F.interpolate(tmp_mask, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=True)
+            tmp_mask = F.interpolate(tmp_mask, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=False)
 
             tmp_supp_feat = supp_feat_high[:,st,...] * tmp_mask               
             q = self.high_avg_pool(query_feat_high.flatten(2).transpose(-2, -1))  # [bs, h*w, c]
@@ -260,7 +260,7 @@ class FewShotSeg(nn.Module):
             similarity = similarity.max(1)[0].view(bsize, sp_sz*sp_sz)   
             similarity = (similarity - similarity.min(1)[0].unsqueeze(1))/(similarity.max(1)[0].unsqueeze(1) - similarity.min(1)[0].unsqueeze(1) + cosine_eps)
             corr_query = similarity.view(bsize, 1, sp_sz, sp_sz)
-            corr_query = F.interpolate(corr_query, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=True)
+            corr_query = F.interpolate(corr_query, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=False)
             corr_query_mask_list.append(corr_query)  
         corr_query_mask = torch.cat(corr_query_mask_list, 1).mean(1).unsqueeze(1)     
         return corr_query_mask

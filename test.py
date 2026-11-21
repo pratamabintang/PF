@@ -10,9 +10,10 @@ from common.vis import Visualizer
 from common.evaluation import Evaluator
 from common import utils
 from data.dataset import FSSDataset
+from common.amp import get_device, resolve_amp_dtype, amp_context
 
 
-def test(model, dataloader, nshot):
+def test(model, dataloader, amp_dtype=None):
     r""" Test HSNet """
 
     # Freeze randomness during testing for reproducibility
@@ -21,7 +22,8 @@ def test(model, dataloader, nshot):
 
     for idx, batch in enumerate(dataloader):
         batch = utils.to_cuda(batch)
-        logit_mask = model.predict_mask(batch)
+        with torch.no_grad(), amp_context(amp_dtype):
+            logit_mask = model.predict_mask(batch)
         pred_mask=(logit_mask>0.5).float().squeeze(1)
 
         # 2. Evaluate prediction
@@ -57,23 +59,27 @@ if __name__ == '__main__':
     parser.add_argument('--reduce_dim', type=int, default=64)
     parser.add_argument('--fold', type=int, default=0, choices=[0, 1, 2, 3])
     parser.add_argument('--shot', type=int, default=1)
+    parser.add_argument('--amp', type=str, default='auto', choices=['auto', 'bf16', 'fp16', 'off'], help='AMP dtype; auto: bf16 on Ampere+ (L4), fp16 below, off on CPU')
+    parser.add_argument('--sam2_checkpoint', type=str, default=None, help='SAM2 hiera checkpoint .pth (optional)')
     parser.add_argument('--visualize', default=True)
     args = parser.parse_args()
     Logger.initialize(args, training=False)
 
     # Model initialization
-    model = ProtoFormer(layers=args.layers, shot=args.shot, reduce_dim=args.reduce_dim)
+    model = ProtoFormer(layers=args.layers, shot=args.shot, reduce_dim=args.reduce_dim, checkpoint_path=args.sam2_checkpoint)
     model.eval()
     Logger.log_params(model)
 
     # Device setup
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = get_device()
+    amp_dtype = resolve_amp_dtype(device, args.amp)
+    Logger.info(f'# device: {device}  amp: {amp_dtype}')
     Logger.info('# available GPUs: %d' % torch.cuda.device_count())
     model.to(device)
 
     # Load trained model
     if args.load == '': raise Exception('Pretrained model not specified.')
-    model.load_state_dict(torch.load(args.load))
+    model.load_state_dict(torch.load(args.load, map_location=device, weights_only=False))
 
     # Helper classes (for testing) initialization
     Evaluator.initialize()
@@ -84,7 +90,6 @@ if __name__ == '__main__':
     dataloader_test = FSSDataset.build_dataloader(args.benchmark, args.bsz, args.nworker, args.fold, 'val', args.shot)
 
     # Test HSNet
-    with torch.no_grad():
-        test_miou, test_fb_iou = test(model, dataloader_test, args.shot)
+    test_miou, test_fb_iou = test(model, dataloader_test, amp_dtype=amp_dtype)
     Logger.info('Fold %d mIoU: %5.2f \t FB-IoU: %5.2f' % (args.fold, test_miou.item(), test_fb_iou.item()))
     Logger.info('==================== Finished Testing ====================')

@@ -24,7 +24,9 @@ def weighted_dice_loss(
                    'sum' : The output will be summed.
         eps: the minimum eps,
     """
+    # fp32 accumulation — bf16 autocast would lose precision here
     target_seg = target_seg.unsqueeze(1).float()
+    prediction = prediction.float()
     n, _, h, w = target_seg.shape
 
     prediction = prediction.reshape(-1, h, w)

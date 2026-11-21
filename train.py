@@ -9,9 +9,10 @@ from common.logger import Logger, AverageMeter
 from common.evaluation import Evaluator
 from common import utils
 from data.dataset import FSSDataset
+from common.amp import get_device, make_scaler, resolve_amp_dtype, amp_context
 
 
-def train(epoch, model, dataloader, optimizer, training):
+def train(epoch, model, dataloader, optimizer, training, amp_dtype=None, scaler=None):
     r""" Train ProtoFormer """
 
     # Force randomness during training / freeze randomness during testing
@@ -20,18 +21,24 @@ def train(epoch, model, dataloader, optimizer, training):
     average_meter = AverageMeter(dataloader.dataset)
 
     for idx, batch in enumerate(dataloader):
-
         batch = utils.to_cuda(batch)
         if training:
-            logit_mask = model(batch['query_img'], batch['support_imgs'], batch['support_masks'])
-            loss = model.compute_loss(logit_mask, batch['query_mask'])
+            with amp_context(amp_dtype):
+                logit_mask = model(batch['query_img'], batch['support_imgs'], batch['support_masks'])
+                loss = model.compute_loss(logit_mask, batch['query_mask'])
         else:
-            logit_mask = model.predict_mask(batch)
+            with torch.no_grad(), amp_context(amp_dtype):
+                logit_mask = model.predict_mask(batch)
         pred_mask=(logit_mask>0.5).float().squeeze(1)
-        if training:           
+        if training:
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
         # 3. Evaluate prediction
         area_inter, area_union = Evaluator.classify_prediction(pred_mask, batch)
@@ -65,14 +72,19 @@ if __name__ == '__main__':
     parser.add_argument('--reduce_dim', type=int, default=64)
     parser.add_argument('--fold', type=int, default=0, choices=[0, 1, 2, 3])
     parser.add_argument('--shot',type=int, default=1)
+    parser.add_argument('--amp', type=str, default='auto', choices=['auto', 'bf16', 'fp16', 'off'], help='AMP dtype; auto: bf16 on Ampere+ (L4), fp16 below, off on CPU')
+    parser.add_argument('--sam2_checkpoint', type=str, default=None, help='SAM2 hiera checkpoint .pth (optional)')
     args = parser.parse_args()
     Logger.initialize(args, training=True)
 
     # Model initialization
-    model = ProtoFormer(layers=args.layers,shot=args.shot,reduce_dim=args.reduce_dim)
+    model = ProtoFormer(layers=args.layers,shot=args.shot,reduce_dim=args.reduce_dim,checkpoint_path=args.sam2_checkpoint)
     Logger.log_params(model)
     # Device setup
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = get_device()
+    amp_dtype = resolve_amp_dtype(device, args.amp)
+    scaler = make_scaler(amp_dtype)
+    Logger.info(f'# device: {device}  amp: {amp_dtype}  scaler: {scaler is not None}')
     Logger.info('# available GPUs: %d' % torch.cuda.device_count())
     model.to(device)
 
@@ -89,9 +101,9 @@ if __name__ == '__main__':
     best_val_loss = float('inf')
 
     for epoch in range(args.niter):
-        trn_loss, trn_miou, trn_fb_iou = train(epoch, model, dataloader_trn, optimizer, training=True)
+        trn_loss, trn_miou, trn_fb_iou = train(epoch, model, dataloader_trn, optimizer, training=True, amp_dtype=amp_dtype, scaler=scaler)
         with torch.no_grad():
-            val_loss, val_miou, val_fb_iou = train(epoch, model, dataloader_val, optimizer, training=False)
+            val_loss, val_miou, val_fb_iou = train(epoch, model, dataloader_val, optimizer, training=False, amp_dtype=amp_dtype)
 
         # Save the best model
         if val_miou > best_val_miou:

@@ -21,6 +21,9 @@ class Evaluator:
             pred_mask[gt_mask == cls.ignore_index] = cls.ignore_index
 
         # compute intersection and union of each episode in a batch
+        # torch.histc unreliable on bf16/half; evaluate in fp32 on same device
+        pred_mask = pred_mask.float()
+        gt_mask = gt_mask.float()
         area_inter, area_pred, area_gt = [],  [], []
         for _pred_mask, _gt_mask in zip(pred_mask, gt_mask):
             _inter = _pred_mask[_pred_mask == _gt_mask]

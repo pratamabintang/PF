@@ -57,12 +57,12 @@ class Visualizer:
         pred_color = cls.colors['red']
         org_qry_imsize = tuple([org_query_imsize[1].item(), org_query_imsize[0].item()])
 
-        spt_imgs = [cls.to_numpy(F.interpolate(spt_img.unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=True).squeeze(0), 'img') for spt_img in spt_imgs]
+        spt_imgs = [cls.to_numpy(F.interpolate(spt_img.unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=False).squeeze(0), 'img') for spt_img in spt_imgs]
         spt_pils = [cls.to_pil(spt_img) for spt_img in spt_imgs]
-        spt_masks = [cls.to_numpy(F.interpolate(spt_mask.unsqueeze(0).unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=True).squeeze(), 'mask') for spt_mask in spt_masks]
+        spt_masks = [cls.to_numpy(F.interpolate(spt_mask.unsqueeze(0).unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=False).squeeze(), 'mask') for spt_mask in spt_masks]
         spt_masked_pils = [Image.fromarray(cls.apply_mask(spt_img, spt_mask, spt_color)) for spt_img, spt_mask in zip(spt_imgs, spt_masks)]
         
-        qry_img=F.interpolate(qry_img.unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=True).squeeze()
+        qry_img=F.interpolate(qry_img.unsqueeze(0), org_qry_imsize, mode='bilinear', align_corners=False).squeeze()
 
         qry_img = cls.to_numpy(qry_img, 'img')
         qry_pil = cls.to_pil(qry_img)
