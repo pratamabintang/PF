@@ -1,0 +1,30 @@
+# ProtoFormer — Colab / modern Python dependencies
+# NOTE: pinning to a Colab-friendly stack (py>=3.10, torch>=2.x).
+# The original repo targeted py3.8 / torch 1.8.1 / cuda11.1 (README.md);
+# those versions EOL and are NOT installable on current Colab images.
+# Python: Colab default is 3.11/3.12 — keep requirements compatible.
+
+# Core (direct imports across repo — see static check)
+torch>=2.2,<3
+torchvision>=0.17
+numpy>=1.24
+Pillow>=9.0
+tensorboardX>=2.6
+tensorboard>=2.6
+
+# SAM2 subpackage (model/sam2 + model/sam2_configs) — vendored, not pip-installed
+hydra-core>=1.3
+omegaconf>=2.3
+tqdm>=4.66
+PyYAML>=6.0
+
+# Optional / only needed by SAM2 video & amg helpers (not imported by train.py/test.py path)
+# opencv-python-headless>=4.8  # only used in model/sam2/utils/amg.py (lazy import)
+# pycocotools>=2.0.8  # only used lazily in model/sam2/utils/amg.py + automatic_mask_generator.py
+# antlr4-python3-runtime  # pulled transitively by hydra-core; not pinned here
+
+# Colab note:
+# - _C.pyd in model/sam2/ is Windows-only binary; on Linux Colab it is ignored.
+#   get_connected_components() in model/sam2/utils/misc.py lazy-imports sam2._C
+#   and will fail only if that code path is hit — train/test path does not call it.
+# - tensorflow is NOT required (README conda line is legacy; no `import tensorflow` in code).

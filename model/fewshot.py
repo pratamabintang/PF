@@ -1,9 +1,9 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from .resnet import *
+
+from model.encoder import SAM2
 from .loss import WeightedDiceLoss
-from .backbone_utils import Backbone
 from .transformer import PositionEmbeddingSine
 from .transformer import Transformer
 
@@ -14,17 +14,30 @@ def Weighted_GAP(supp_feat, mask):
     supp_feat = F.avg_pool2d(input=supp_feat, kernel_size=supp_feat.shape[-2:]) * feat_h * feat_w / area  
     return supp_feat
 
-class ProtoFormer(nn.Module):
-    def __init__(self, layers=50, shot=1, reduce_dim=64, criterion=WeightedDiceLoss()):
-        super(ProtoFormer, self).__init__()
-        assert layers in [50, 101]
-        assert classes > 1 
-        self.layers = layers
+class FewShotSeg(nn.Module):
+    def __init__(
+        self,
+        shot: int = 1,
+        reduce_dim: int = 64,
+        criterion = WeightedDiceLoss(),
+        img_size: int = 512,
+        checkpoint_path: str = None,
+        model_cfg: str = "sam2_hiera_l.yaml"
+    ):
+        super(FewShotSeg, self).__init__()
+
+        if img_size % 32 != 0:
+            raise ValueError('img_size must be a multiple of 32, got %d' % img_size)
+
         self.criterion = criterion
         self.shot = shot
         self.reduce_dim = reduce_dim
 
-        in_fea_dim = 1024 + 512      
+        self.backbone = SAM2(checkpoint_path=checkpoint_path, model_cfg=model_cfg)
+        channels = list(reversed(self.backbone.channel_list))
+
+        in_fea_dim = channels[1] + channels[2]
+        self.high_dim = channels[3]  
 
         drop_out = 0.5
         self.adjust_feature_supp = nn.Sequential(
@@ -52,7 +65,8 @@ class ProtoFormer(nn.Module):
             return_intermediate_dec=False,
         )
 
-        self.high_avg_pool = nn.Identity()        
+        self.high_avg_pool = nn.Identity()
+        self.img_size = img_size
         prior_channel = 1 
         self.pyramid_bins = [60, 30, 15, 8]
         self.avgpool_list = []
@@ -98,33 +112,64 @@ class ProtoFormer(nn.Module):
         self.alpha_conv = nn.ModuleList(self.alpha_conv)    
 
         self.init_weights()
-        self.backbone = Backbone('resnet{}'.format(layers), train_backbone=False, return_interm_layers=True, dilation=[False, True, True])
 
     def init_weights(self):
-        for m in self.modules():
+        for name, m in self.named_modules():
+            if name == 'backbone' or name.startswith('backbone.'):
+                continue
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 if hasattr(m, 'bias') and m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
 
-    def forward(self, x, s_x=torch.FloatTensor(1,1,3,473,473).cuda(), s_y=torch.FloatTensor(1,1,473,473).cuda()):
-        batch_size, C, h, w = x.size()
+    def forward(
+        self,
+        x,
+        s_x = None,
+        s_y = None
+    ):
+        if s_x is None or s_y is None:
+            raise ValueError("support missing")
+
+        batch_size, _, height, width = x.size()
         img_size = x.size()[-2:]
 
-        # backbone feature extraction
-        qry_bcb_fts = self.backbone(x)
-        supp_bcb_fts = self.backbone(s_x.view(-1, 3, *img_size))
-        query_feat = torch.cat([qry_bcb_fts['1'], qry_bcb_fts['2']], dim=1)
-        supp_feat = torch.cat([supp_bcb_fts['1'], supp_bcb_fts['2']], dim=1)
+        # backbone
+        all_imgs = torch.cat([x, s_x.view(-1, 3, *img_size)], dim=0)
+        all_fts = self.backbone(all_imgs)
+
+        # separate
+        qry_bcb_fts = {}
+        supp_bcb_fts = {}
+        for key in all_fts.keys():
+            qry_bcb_fts[key] = all_fts[key][:batch_size]
+            supp_bcb_fts[key] = all_fts[key][batch_size:]
+
+        query_feat_2 = F.interpolate(
+            qry_bcb_fts['2'],
+            size=qry_bcb_fts['1'].shape[-2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        supp_feat_2 = F.interpolate(
+            supp_bcb_fts['2'],
+            size=supp_bcb_fts['1'].shape[-2:],
+            mode='bilinear',
+            align_corners=False
+        )
+        query_feat = torch.cat([qry_bcb_fts['1'], query_feat_2], dim=1)
+        supp_feat = torch.cat([supp_bcb_fts['1'], supp_feat_2], dim=1)
+
         query_feat = self.adjust_feature_qry(query_feat)
-        supp_feat = self.adjust_feature_supp(supp_feat) 
+        supp_feat = self.adjust_feature_supp(supp_feat)
+
         fts_size = query_feat.shape[-2:]
         supp_feat_list = []
         r_supp_feat = supp_feat.view(batch_size, self.shot, -1, fts_size[0], fts_size[1])
         for st in range(self.shot):
             mask = (s_y[:,st,:,:]==1).float().unsqueeze(1)
-            mask = F.interpolate(mask, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=True)
+            mask = F.interpolate(mask, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=False)
             tmp_supp_feat = r_supp_feat[:,st,...]
             tmp_supp_feat = Weighted_GAP(tmp_supp_feat, mask)
             supp_feat_list.append(tmp_supp_feat)
@@ -142,7 +187,8 @@ class ProtoFormer(nn.Module):
         fg_embed=self.transformer(key_embed,masking,query_embed,query_pos,key_pos)
         # prior generation
         query_feat_high = qry_bcb_fts['3']
-        supp_feat_high = supp_bcb_fts['3'].view(batch_size, -1, 2048, fts_size[0], fts_size[1])
+        high_size = supp_bcb_fts['3'].shape[-2:]
+        supp_feat_high = supp_bcb_fts['3'].view(batch_size, self.shot, self.high_dim, high_size[0], high_size[1])
         corr_query_mask = self.generate_prior(query_feat_high, supp_feat_high, s_y, fts_size)
         
         pyramid_feat_list = []
@@ -155,7 +201,7 @@ class ProtoFormer(nn.Module):
                 bin = tmp_bin
                 query_feat_bin = self.avgpool_list[idx](query_feat)
             supp_feat_bin = global_supp_pp.expand(-1, -1, bin, bin)
-            corr_mask_bin = F.interpolate(corr_query_mask, size=(bin, bin), mode='bilinear', align_corners=True)
+            corr_mask_bin = F.interpolate(corr_query_mask, size=(bin, bin), mode='bilinear', align_corners=False)
             merge_feat_bin = torch.cat([query_feat_bin, supp_feat_bin, corr_mask_bin], 1)
             merge_feat_bin = self.init_merge[idx](merge_feat_bin)
 
@@ -177,7 +223,7 @@ class ProtoFormer(nn.Module):
         fused_query_feat = query_feat.clone()                   
         # Output Part
         out1=torch.sigmoid(torch.einsum("bchw,bcl->blhw",fused_query_feat,fg_embed))
-        out = F.interpolate(out1, size=(h, w), mode='bilinear', align_corners=True) 
+        out = F.interpolate(out1, size=(height, width), mode='bilinear', align_corners=True) 
         return out
 
     def predict_mask(self, batch):
