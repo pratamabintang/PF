@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 
-from model.fewshot import ProtoFormer
+from model.fewshot import FewShotSeg as ProtoFormer
 from common.logger import Logger, AverageMeter
 from common.vis import Visualizer
 from common.evaluation import Evaluator
