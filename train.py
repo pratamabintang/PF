@@ -73,7 +73,8 @@ if __name__ == '__main__':
     parser.add_argument('--shot',type=int, default=1)
     parser.add_argument('--amp', type=str, default='auto', choices=['auto', 'bf16', 'fp16', 'off'], help='AMP dtype; auto: bf16 on Ampere+ (L4), fp16 below, off on CPU')
     parser.add_argument('--sam2_checkpoint', type=str, default=None, help='SAM2 hiera checkpoint .pth (optional)')
-    parser.add_argument('--patience', type=int, default=50, help='early stop if val mIoU not improve for N epochs; 0 = off')
+    parser.add_argument('--patience', type=int, default=20, help='early stop if val mIoU not improve for N val checks; 0 = off')
+    parser.add_argument('--val_interval', type=int, default=3, help='run validation every N epochs; best model & early stop only evaluated on val epochs')
     args = parser.parse_args()
     Logger.initialize(args, training=True)
 
@@ -99,23 +100,26 @@ if __name__ == '__main__':
 
     best_val_miou = float('-inf')
     best_val_loss = float('inf')
-    epochs_no_improve = 0
+    val_checks_no_improve = 0
 
     for epoch in range(args.niter):
         trn_loss, trn_miou, trn_fb_iou = train(epoch, model, dataloader_trn, optimizer, training=True, amp_dtype=amp_dtype, scaler=scaler)
-        with torch.no_grad():
-            val_loss, val_miou, val_fb_iou = train(epoch, model, dataloader_val, optimizer, training=False, amp_dtype=amp_dtype)
 
-        # Save the best model
-        if val_miou > best_val_miou:
-            best_val_miou = val_miou
-            Logger.save_model_miou(model, epoch, val_miou)
-            epochs_no_improve = 0
-        else:
-            epochs_no_improve += 1
-            if args.patience > 0 and epochs_no_improve >= args.patience:
-                Logger.info(f'Early stop: val mIoU no improve for {epochs_no_improve} epochs @ epoch {epoch}')
-                break
+        val_loss = val_miou = val_fb_iou = None
+        if args.val_interval > 0 and ((epoch + 1) % args.val_interval == 0 or epoch == args.niter - 1):
+            with torch.no_grad():
+                val_loss, val_miou, val_fb_iou = train(epoch, model, dataloader_val, optimizer, training=False, amp_dtype=amp_dtype)
+
+            # Save the best model — only on val epochs
+            if val_miou > best_val_miou:
+                best_val_miou = val_miou
+                Logger.save_model_miou(model, epoch, val_miou)
+                val_checks_no_improve = 0
+            else:
+                val_checks_no_improve += 1
+                if args.patience > 0 and val_checks_no_improve >= args.patience:
+                    Logger.info(f'Early stop: val mIoU no improve for {val_checks_no_improve} val checks @ epoch {epoch}')
+                    break
 
         Logger.tbd_writer.add_scalars('data/loss', {'trn_loss': trn_loss, 'val_loss': val_loss}, epoch)
         Logger.tbd_writer.add_scalars('data/miou', {'trn_miou': trn_miou, 'val_miou': val_miou}, epoch)
