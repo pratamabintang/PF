@@ -26,8 +26,12 @@ class FewShotSeg(nn.Module):
     ):
         super(FewShotSeg, self).__init__()
 
-        if img_size % 32 != 0:
-            raise ValueError('img_size must be a multiple of 32, got %d' % img_size)
+        if img_size % 128 != 0:
+            raise ValueError(
+                'img_size must be a multiple of 128, got %d: Hiera._get_pos_embed tiles '
+                'pos_embed_window (window_spec[0]=8) with `//`, so the patch grid '
+                'ceil(img_size/4) must be divisible by 8' % img_size
+            )
 
         self.criterion = criterion
         self.shot = shot

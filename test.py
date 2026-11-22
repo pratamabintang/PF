@@ -56,6 +56,7 @@ if __name__ == '__main__':
     parser.add_argument('--nworker', type=int, default=0)
     parser.add_argument('--load', type=str, default='pretrained/coco/fold0/r50_1shot.pt')
     parser.add_argument('--reduce_dim', type=int, default=64)
+    parser.add_argument('--img_size', type=int, default=512, help='input size; must be a multiple of 128 for hiera_l window pos-embed (Hiera.window_spec[0]=8)')
     parser.add_argument('--fold', type=int, default=0, choices=[0, 1, 2, 3])
     parser.add_argument('--shot', type=int, default=1)
     parser.add_argument('--amp', type=str, default='auto', choices=['auto', 'bf16', 'fp16', 'off'], help='AMP dtype; auto: bf16 on Ampere+ (L4), fp16 below, off on CPU')
@@ -65,7 +66,7 @@ if __name__ == '__main__':
     Logger.initialize(args, training=False)
 
     # Model initialization
-    model = ProtoFormer(shot=args.shot, reduce_dim=args.reduce_dim, checkpoint_path=args.sam2_checkpoint)
+    model = ProtoFormer(shot=args.shot, reduce_dim=args.reduce_dim, checkpoint_path=args.sam2_checkpoint, img_size=args.img_size)
     model.eval()
     Logger.log_params(model)
 
@@ -85,7 +86,7 @@ if __name__ == '__main__':
     Visualizer.initialize(args.visualize,'./vis/')
 
     # Dataset initialization
-    FSSDataset.initialize(img_size=473, datapath=args.datapath)
+    FSSDataset.initialize(img_size=args.img_size, datapath=args.datapath)
     dataloader_test = FSSDataset.build_dataloader(args.benchmark, args.bsz, args.nworker, args.fold, 'val', args.shot)
 
     # Test HSNet
