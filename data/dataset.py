@@ -32,6 +32,7 @@ class FSSDataset:
         transforms=cls.transform
         use_original_imgsize = split == 'val'
         dataset = cls.datasets[benchmark](cls.datapath, fold=fold, transform=transforms, split=split, shot=shot, use_original_imgsize=use_original_imgsize)
-        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker)
+        dataloader = DataLoader(dataset, batch_size=bsz, shuffle=shuffle, num_workers=nworker,
+                                pin_memory=True, persistent_workers=nworker > 0)
 
         return dataloader

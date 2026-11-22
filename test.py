@@ -79,7 +79,9 @@ if __name__ == '__main__':
 
     # Load trained model
     if args.load == '': raise Exception('Pretrained model not specified.')
-    model.load_state_dict(torch.load(args.load, map_location=device, weights_only=False))
+    info = Logger.load_weights(model, args.load, device=device)
+    if info:
+        Logger.info('# loaded checkpoint: epoch %s  val mIoU %s' % (info.get('epoch'), info.get('val_miou')))
 
     # Helper classes (for testing) initialization
     Evaluator.initialize()

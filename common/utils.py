@@ -24,7 +24,7 @@ def mean(x):
 def to_cuda(batch):
     for key, value in batch.items():
         if isinstance(value, torch.Tensor):
-            batch[key] = value.cuda()
+            batch[key] = value.cuda(non_blocking=True)
     return batch
 
 

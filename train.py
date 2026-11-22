@@ -76,6 +76,8 @@ if __name__ == '__main__':
     parser.add_argument('--sam2_checkpoint', type=str, default=None, help='SAM2 hiera checkpoint .pth (optional)')
     parser.add_argument('--patience', type=int, default=20, help='early stop if val mIoU not improve for N val checks; 0 = off')
     parser.add_argument('--val_interval', type=int, default=3, help='run validation every N epochs; best model & early stop only evaluated on val epochs')
+    parser.add_argument('--resume', action='store_true', help='lanjut dari logs/<logpath>/last_model.pt kalau ada')
+    parser.add_argument('--save_interval', type=int, default=1, help='tulis last_model.pt (checkpoint resume) tiap N epoch; 0 = mati')
     args = parser.parse_args()
     Logger.initialize(args, training=True)
 
@@ -100,12 +102,27 @@ if __name__ == '__main__':
     dataloader_val = FSSDataset.build_dataloader(args.benchmark, 1, args.nworker, args.fold, 'val',shot=args.shot)
 
     best_val_miou = float('-inf')
-    best_val_loss = float('inf')
     val_checks_no_improve = 0
+    start_epoch = 0
 
-    for epoch in range(args.niter):
+    if args.resume:
+        ckpt = Logger.load_resume(model, optimizer, scaler, device)
+        if ckpt is None:
+            Logger.info('# resume: tidak ada last_model.pt yang valid, mulai dari epoch 0')
+        else:
+            skip = ('niter', 'resume', 'nworker', 'bsz', 'lr', 'amp')
+            mismatch = {k: (ckpt['args'][k], v) for k, v in vars(args).items()
+                        if k in ckpt['args'] and k not in skip and ckpt['args'][k] != v}
+            assert not mismatch, 'resume ditolak, argumen beda (ckpt, now): %s' % mismatch
+            start_epoch = ckpt['epoch'] + 1
+            best_val_miou = ckpt['best_val_miou']
+            val_checks_no_improve = ckpt['val_checks_no_improve']
+            Logger.info('# resume: epoch %d -> %d  best val mIoU %.2f' % (ckpt['epoch'], start_epoch, best_val_miou))
+            if start_epoch >= args.niter:
+                Logger.info('# resume: niter %d sudah tercapai, tidak ada yang dikerjakan' % args.niter)
+
+    for epoch in range(start_epoch, args.niter):
         trn_loss, trn_miou, trn_fb_iou = train(epoch, model, dataloader_trn, optimizer, training=True, amp_dtype=amp_dtype, scaler=scaler)
-
         val_loss = val_miou = val_fb_iou = None
         if args.val_interval > 0 and ((epoch + 1) % args.val_interval == 0 or epoch == args.niter - 1):
             with torch.no_grad():
@@ -118,9 +135,13 @@ if __name__ == '__main__':
                 val_checks_no_improve = 0
             else:
                 val_checks_no_improve += 1
-                if args.patience > 0 and val_checks_no_improve >= args.patience:
-                    Logger.info(f'Early stop: val mIoU no improve for {val_checks_no_improve} val checks @ epoch {epoch}')
-                    break
+
+        if args.save_interval > 0 and ((epoch + 1) % args.save_interval == 0 or epoch == args.niter - 1):
+            Logger.save_resume(model, optimizer, scaler, epoch, best_val_miou, val_checks_no_improve, args)
+
+        if val_miou is not None and args.patience > 0 and val_checks_no_improve >= args.patience:
+            Logger.info(f'Early stop: val mIoU no improve for {val_checks_no_improve} val checks @ epoch {epoch}')
+            break
 
         Logger.tbd_writer.add_scalars('data/loss', {'trn_loss': trn_loss, 'val_loss': val_loss}, epoch)
         Logger.tbd_writer.add_scalars('data/miou', {'trn_miou': trn_miou, 'val_miou': val_miou}, epoch)
