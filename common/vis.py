@@ -68,6 +68,11 @@ class Visualizer:
         qry_pil = cls.to_pil(qry_img)
         qry_mask = cls.to_numpy(qry_mask, 'mask')
         pred_mask = cls.to_numpy(pred_mask, 'mask')
+        # pastikan semua (img, mask, pred) satu ukuran dengan qry_img asli
+        if qry_img.shape[:2] != qry_mask.shape[:2]:
+            qry_mask = np.array(Image.fromarray(qry_mask).resize((qry_img.shape[1], qry_img.shape[0]), Image.NEAREST))
+        if qry_img.shape[:2] != pred_mask.shape[:2]:
+            pred_mask = np.array(Image.fromarray(pred_mask).resize((qry_img.shape[1], qry_img.shape[0]), Image.NEAREST))
         pred_masked_pil = Image.fromarray(cls.apply_mask(qry_img.astype(np.uint8), pred_mask.astype(np.uint8), pred_color))
         qry_masked_pil = Image.fromarray(cls.apply_mask(qry_img.astype(np.uint8), qry_mask.astype(np.uint8), qry_color))
 
