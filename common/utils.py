@@ -22,9 +22,11 @@ def mean(x):
 
 
 def to_cuda(batch):
-    for key, value in batch.items():
-        if isinstance(value, torch.Tensor):
-            batch[key] = value.cuda(non_blocking=True)
+    """Move tensors to GPU if available, else stay on CPU (no-op)."""
+    if torch.cuda.is_available():
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor):
+                batch[key] = value.cuda(non_blocking=True)
     return batch
 
 
