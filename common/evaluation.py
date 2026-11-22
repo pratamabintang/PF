@@ -12,12 +12,24 @@ class Evaluator:
     def classify_prediction(cls, pred_mask, batch):
         gt_mask = batch.get('query_mask')
 
+        # pred_mask must match gt_mask shape (letterbox crop to original size)
+        if pred_mask.shape[-2:] != gt_mask.shape[-2:]:
+            import torch.nn.functional as F
+            pred_mask = F.interpolate(pred_mask.unsqueeze(1).float(),
+                                      size=gt_mask.shape[-2:],
+                                      mode='nearest').squeeze(1)
+
         # Apply ignore_index in PASCAL-5i masks (following evaluation scheme in PFE-Net (TPAMI 2020))
         query_ignore_idx = batch.get('query_ignore_idx')
         if query_ignore_idx is not None:
-            assert torch.logical_and(query_ignore_idx, gt_mask).sum() == 0
-            query_ignore_idx *= cls.ignore_index
-            gt_mask = gt_mask + query_ignore_idx
+            if query_ignore_idx.shape[-2:] != gt_mask.shape[-2:]:
+                import torch.nn.functional as F
+                query_ignore_idx = F.interpolate(query_ignore_idx.unsqueeze(1).float(),
+                                                 size=gt_mask.shape[-2:],
+                                                 mode='nearest').squeeze(1).to(query_ignore_idx.dtype)
+            assert torch.logical_and(query_ignore_idx.long(), gt_mask.long()).sum() == 0
+            query_ignore_idx = query_ignore_idx.long() * cls.ignore_index
+            gt_mask = gt_mask.clone().long() + query_ignore_idx
             pred_mask[gt_mask == cls.ignore_index] = cls.ignore_index
 
         # compute intersection and union of each episode in a batch
