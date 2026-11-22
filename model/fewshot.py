@@ -245,7 +245,7 @@ class FewShotSeg(nn.Module):
         cosine_eps = 1e-7
         for st in range(self.shot):
             tmp_mask = (s_y[:,st,:,:] == 1).float().unsqueeze(1)
-            tmp_mask = F.interpolate(tmp_mask, size=(fts_size[0], fts_size[1]), mode='bilinear', align_corners=False)
+            tmp_mask = F.interpolate(tmp_mask, size=supp_feat_high.shape[-2:], mode='bilinear', align_corners=False)
 
             tmp_supp_feat = supp_feat_high[:,st,...] * tmp_mask               
             q = self.high_avg_pool(query_feat_high.flatten(2).transpose(-2, -1))  # [bs, h*w, c]
