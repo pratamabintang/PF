@@ -22,6 +22,17 @@ from torch.utils.data import Dataset
 
 
 class DatasetDeadChick(Dataset):
+    """Dead-chick loader with letterbox (black padding) preprocessing.
+
+    Padding mode (default): resize preserving aspect ratio, pad remaining
+    space with black (RGB) / 0 (mask). No stretching.
+
+    img_size is taken from the transform pipeline: FSSDataset.initialize()
+    builds Resize(img_size). We recover it from the Resize transform and
+    need to feed Pillow images ourselves so padding is applied BEFORE
+    transform. The transform then sees an already-square Pillow image.
+    """
+
     def __init__(self, datapath, fold, transform, split, shot, use_original_imgsize):
         self.split = 'val' if split in ['val', 'test'] else 'trn'
         self.fold = fold
@@ -31,6 +42,10 @@ class DatasetDeadChick(Dataset):
         self.shot = shot
         self.use_original_imgsize = use_original_imgsize
         self.transform = transform
+        # recover img_size from transform (Resize in Compose)
+        self.img_size = getattr(transform, 'transforms', [None])[0].size[0] if hasattr(transform, 'transforms') else 512
+        if isinstance(self.img_size, tuple):
+            self.img_size = self.img_size[0]
 
         self.base_path = self._find_base(datapath)
         self.class_ids = [1]  # dead
@@ -57,17 +72,20 @@ class DatasetDeadChick(Dataset):
     def __getitem__(self, idx):
         idx %= len(self.img_metadata)
         query_name, support_names, class_sample = self.sample_episode(idx)
-        query_img, query_cmask, support_imgs, support_cmasks, org_qry_imsize = \
+        query_img_pil, query_cmask, support_pils, support_cmasks, org_qry_imsize = \
             self.load_frame(query_name, support_names)
 
-        query_img = self.transform(query_img)
+        # letterbox -> transform (Resize already square, so no stretch here)
+        query_img = self.transform(query_img_pil)
         if not self.use_original_imgsize:
             query_cmask = F.interpolate(query_cmask.unsqueeze(0).unsqueeze(0).float(),
                                         query_img.size()[-2:], mode='nearest').squeeze()
+        # mask already letterboxed to size x size; interpolate is identity when sizes match,
+        # but keep it for safety (e.g. img_size 512 vs transform Resize 512).
         # binary mask (0/1) -> protoformer expects 0/1 for class_id=1 path (see pascal.extract_ignore_idx)
         query_mask, query_ignore_idx = self.extract_ignore_idx(query_cmask.float(), class_sample)
 
-        support_imgs = torch.stack([self.transform(s) for s in support_imgs])
+        support_imgs = torch.stack([self.transform(s) for s in support_pils])
         support_masks, support_ignore_idxs = [], []
         for scmask in support_cmasks:
             scmask = F.interpolate(scmask.unsqueeze(0).unsqueeze(0).float(),
@@ -100,12 +118,62 @@ class DatasetDeadChick(Dataset):
         out = (mask == 1).float()
         return out, boundary
 
+    # ---------- letterbox helpers (Pillow, before transform) ----------
+    @staticmethod
+    def _letterbox_img(pil, size):
+        """Resize preserving aspect ratio, pad with black to size x size."""
+        w, h = pil.size
+        scale = size / max(w, h)
+        nw, nh = int(round(w * scale)), int(round(h * scale))
+        resized = pil.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new('RGB', (size, size), (0, 0, 0))
+        canvas.paste(resized, ((size - nw) // 2, (size - nh) // 2))
+        return canvas
+
+    @staticmethod
+    def _letterbox_mask(np_mask, size):
+        """Resize preserving aspect ratio, pad with 0 to size x size (numpy HxW)."""
+        h, w = np_mask.shape[:2]
+        scale = size / max(w, h)
+        nw, nh = int(round(w * scale)), int(round(h * scale))
+        from PIL import Image as _I
+        resized = _I.fromarray(np_mask).resize((nw, nh), _I.NEAREST)
+        canvas = np.zeros((size, size), dtype=np_mask.dtype)
+        y0, x0 = (size - nh) // 2, (size - nw) // 2
+        canvas[y0:y0 + nh, x0:x0 + nw] = np.array(resized)
+        return canvas
+
+    @staticmethod
+    def _unletterbox(pred_logit, orig_w, orig_h, size):
+        """Crop centre region of square pred back to original aspect, then resize to orig."""
+        # pred_logit: (H,W) tensor size x size (float)
+        scale = size / max(orig_w, orig_h)
+        nw, nh = int(round(orig_w * scale)), int(round(orig_h * scale))
+        y0, x0 = (size - nh) // 2, (size - nw) // 2
+        crop = pred_logit[:, y0:y0 + nh, x0:x0 + nw] if pred_logit.dim() == 3 else pred_logit[y0:y0 + nh, x0:x0 + nw]
+        if crop.dim() == 2:
+            crop = crop.unsqueeze(0).unsqueeze(0)
+        elif crop.dim() == 3:
+            crop = crop.unsqueeze(0)
+        out = F.interpolate(crop.float(), size=(orig_h, orig_w), mode='bilinear', align_corners=False)
+        return out.squeeze()
+
     def load_frame(self, query_name, support_names):
-        q_img = self.read_img(query_name)
-        q_mask = self.read_mask(query_name)
-        s_imgs = [self.read_img(n) for n in support_names]
-        s_masks = [self.read_mask(n) for n in support_names]
-        return q_img, q_mask, s_imgs, s_masks, q_img.size
+        q_img_raw = self.read_img(query_name)          # Pil
+        q_mask_np = self.read_mask_np(query_name)       # np HxW
+        s_raw = [self.read_img(n) for n in support_names]
+        s_mask_np = [self.read_mask_np(n) for n in support_names]
+        org = q_img_raw.size                             # (w,h) original
+        # letterboxed versions for the model input
+        q_img = self._letterbox_img(q_img_raw, self.img_size)
+        q_cm = torch.tensor(self._letterbox_mask(q_mask_np, self.img_size))
+        s_imgs = [self._letterbox_img(im, self.img_size) for im in s_raw]
+        s_cms = [torch.tensor(self._letterbox_mask(m, self.img_size)) for m in s_mask_np]
+        return q_img, q_cm, s_imgs, s_cms, org
+
+    def read_mask_np(self, img_name):
+        path = os.path.join(self.base_path, img_name + '_mask.png')
+        return np.array(Image.open(path))
 
     def read_mask(self, img_name):
         path = os.path.join(self.base_path, img_name + '_mask.png')
