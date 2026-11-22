@@ -50,7 +50,7 @@ if __name__ == '__main__':
     # Arguments parsing
     parser = argparse.ArgumentParser(description='Hypercorrelation Squeeze Pytorch Implementation')
     parser.add_argument('--datapath', type=str, default='../../data')
-    parser.add_argument('--benchmark', type=str, default='coco', choices=['pascal', 'coco', 'fss'])
+    parser.add_argument('--benchmark', type=str, default='coco', choices=['pascal', 'coco', 'fss', 'deadchick'])
     parser.add_argument('--logpath', type=str, default='log_queryformer_r50_5s_coco_fold0')
     parser.add_argument('--bsz', type=int, default=1)
     parser.add_argument('--nworker', type=int, default=0)

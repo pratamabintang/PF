@@ -3,6 +3,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader
 from data.pascal import DatasetPASCAL
 from data.coco import DatasetCOCO
+from data.deadchick import DatasetDeadChick
 
 
 class FSSDataset:
@@ -12,7 +13,8 @@ class FSSDataset:
 
         cls.datasets = {
             'pascal': DatasetPASCAL,
-            'coco': DatasetCOCO
+            'coco': DatasetCOCO,
+            'deadchick': DatasetDeadChick
         }
 
         cls.img_mean = [0.485, 0.456, 0.406]
